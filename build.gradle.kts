@@ -14,7 +14,7 @@ subprojects {
     tasks.withType<JavaCompile>().configureEach {
         options.release = 21
         options.encoding = "UTF-8"
-        options.compilerArgs.addAll(listOf("-parameters", "-Xlint:all,-processing,-serial"))
+        options.compilerArgs.addAll(listOf("-parameters", "-Xlint:all,-processing,-serial,-try,-this-escape"))
     }
 
     tasks.withType<Test>().configureEach {

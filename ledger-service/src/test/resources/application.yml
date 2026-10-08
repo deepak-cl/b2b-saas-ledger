@@ -1,0 +1,40 @@
+# Tests: JWTs are mocked (no Keycloak). Issuer/JWKS URLs must still parse, but nothing
+# fetches them because MockMvc jwt() post-processors populate the SecurityContext directly.
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:8180/realms/ledger
+          jwk-set-uri: http://localhost:8180/realms/ledger/protocol/openid-connect/certs
+          audiences: ledger-api
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    properties:
+      jakarta.persistence.database-product-name: PostgreSQL
+      jakarta.persistence.database-major-version: 17
+  flyway:
+    locations: classpath:db/migration/control
+    schemas: public,ai
+    placeholders:
+      shared_jdbc_url: ${spring.datasource.url}
+      shared_db_username: ${spring.datasource.username}
+      shared_db_secret_ref: env:LEDGER_DB_PASSWORD
+      embedding_dimensions: 1536
+
+ledger:
+  tenancy:
+    embedding-dimensions: 1536
+    migrate-on-startup: true
+    max-concurrent-postings-per-tenant: 8
+    posting-queue-timeout: 2s
+  secrets:
+    LEDGER_DB_PASSWORD: ledger
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false

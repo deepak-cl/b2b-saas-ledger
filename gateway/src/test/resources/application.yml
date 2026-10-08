@@ -1,0 +1,23 @@
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:8180/realms/ledger
+          jwk-set-uri: http://localhost:8180/realms/ledger/protocol/openid-connect/certs
+          audiences: ledger-api
+  cloud:
+    gateway:
+      server:
+        webflux:
+          default-filters:
+            - DedupeResponseHeader=X-Request-Id, RETAIN_FIRST
+          routes:
+            - id: ledger-service
+              uri: ${LEDGER_SERVICE_URL:http://127.0.0.1:9}
+              predicates:
+                - Path=/api/**
+
+gateway:
+  cors:
+    allowed-origins: http://localhost:5173

@@ -1,5 +1,6 @@
 server:
   port: 8081
+  shutdown: graceful
 
 spring:
   application:
@@ -7,6 +8,7 @@ spring:
   threads:
     virtual:
       enabled: true
+  # Control-plane connection. Tenant connections come from public.tenant_datasources.
   datasource:
     url: ${LEDGER_DB_URL:jdbc:postgresql://localhost:5432/ledger}
     username: ${LEDGER_DB_USER:ledger}
@@ -14,25 +16,54 @@ spring:
   jpa:
     open-in-view: false
     hibernate:
-      ddl-auto: validate
+      ddl-auto: none
+    properties:
+      # No tenant is bound at startup, so Hibernate must not probe the routing DataSource.
+      jakarta.persistence.database-product-name: PostgreSQL
+      jakarta.persistence.database-major-version: 17
   flyway:
-    # Control plane only; tenant schemas are migrated per tenant at provisioning time.
+    # Control plane only; tenant schemas are migrated per tenant (TenantMigrator).
     locations: classpath:db/migration/control
     schemas: public,ai
     placeholders:
       shared_jdbc_url: ${spring.datasource.url}
       shared_db_username: ${spring.datasource.username}
       shared_db_secret_ref: env:LEDGER_DB_PASSWORD
-      embedding_dimensions: ${ledger.ai.embedding-dimensions}
+      embedding_dimensions: ${ledger.tenancy.embedding-dimensions}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${LEDGER_OIDC_ISSUER:http://localhost:8180/realms/ledger}
+          jwk-set-uri: ${LEDGER_OIDC_JWKS:http://localhost:8180/realms/ledger/protocol/openid-connect/certs}
+          audiences: ledger-api
 
 ledger:
-  ai:
+  tenancy:
     # Must match the active embedding model (OpenAI text-embedding-3-small = 1536).
     # Changing it requires re-embedding and a new migration.
     embedding-dimensions: ${LEDGER_EMBEDDING_DIMENSIONS:1536}
+    max-concurrent-postings-per-tenant: 8
+  # Local-development fallbacks for env: secret references (never used when the env var is set).
+  secrets:
+    LEDGER_DB_PASSWORD: ledger
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
 
 management:
   endpoints:
     web:
       exposure:
         include: health,info,prometheus
+  health:
+    db:
+      # The routing DataSource has no tenant at probe time; the control-plane pool is checked instead.
+      ignore-routing-data-sources: true
+
+logging:
+  pattern:
+    level: "%5p [tenant=%X{tenant:-}] [req=%X{requestId:-}]"

@@ -1,0 +1,898 @@
+openapi: 3.0.3
+info:
+  title: Multi-Tenant Ledger & Financial Analytics API
+  version: 1.0.0
+  description: |
+    Public contract of the ledger platform, served through the API gateway.
+
+    **Authentication.** Every `/api/**` call needs an OAuth2 access token issued by Keycloak
+    (realm `ledger`, audience `ledger-api`), sent as `Authorization: Bearer <token>`.
+
+    **Tenancy.** Tenant-scoped endpoints require `X-Tenant-ID: <tenant slug>`. The slug must
+    appear in the token's `tenants` claim (Keycloak group `/tenants/<slug>/<ROLE>`); the role
+    in that group decides what the caller may do:
+
+    | Role       | Read | Post transactions | Manage accounts | AI queries |
+    |------------|------|-------------------|-----------------|------------|
+    | OWNER      | yes  | yes               | yes             | yes        |
+    | ADMIN      | yes  | yes               | yes             | yes        |
+    | ACCOUNTANT | yes  | yes               | yes             | yes        |
+    | AUDITOR    | yes  | no                | no              | yes        |
+    | VIEWER     | yes  | no                | no              | no         |
+
+    Admin endpoints (`/api/v1/admin/**`) take no tenant header and need the realm role
+    `PLATFORM_ADMIN`.
+
+    **Errors.** All errors are RFC 9457 `application/problem+json` with a stable `code`
+    (see `ErrorCode`) and a `retryable` flag. Clients branch on `code`, never on `title`/`detail`.
+
+    **Rate limits.** Per tenant at the gateway: ledger/analytics calls share one bucket,
+    AI calls have a much smaller one. Responses carry `X-RateLimit-Limit` and
+    `X-RateLimit-Remaining`; a 429 adds `Retry-After` (seconds).
+
+    **Money.** Amounts are decimal strings (or JSON numbers) with up to 16 integer and 4
+    fractional digits; never binary floating point. Currencies are ISO 4217 codes.
+  contact:
+    name: Ledger Platform
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local gateway
+  - url: http://localhost:8081
+    description: Local ledger-service (bypasses gateway rate limits)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Ledger
+    description: Double-entry postings and chart of accounts
+  - name: Analytics
+    description: Aggregated financial statements
+  - name: AI Audit
+    description: Natural-language financial insights (tenant-isolated RAG + tool calling)
+  - name: Admin
+    description: Platform administration (tenant provisioning)
+
+paths:
+  /api/v1/ledger/transaction:
+    post:
+      tags: [Ledger]
+      operationId: postTransaction
+      summary: Post a double-entry transaction
+      description: |
+        Atomically posts a journal entry. For each currency, the sum of DEBIT lines must equal
+        the sum of CREDIT lines. Posting is idempotent: repeating a request with the same
+        `Idempotency-Key` and the same body returns the original entry (`200` with
+        `Idempotent-Replayed: true`); reusing the key with a different body is a `409`.
+
+        Each posted entry is sealed into the tenant's SHA-256 hash chain (`chainSeq`,
+        `entryHash`) and cannot be modified afterwards; corrections are new reversing entries.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostTransactionRequest'
+            examples:
+              cloudInvoice:
+                summary: AWS invoice paid from operating cash
+                value:
+                  effectiveDate: '2026-10-08'
+                  description: AWS invoice 2026-09
+                  externalRef: INV-AWS-2026-09
+                  metadata: { vendor: aws, costCenter: platform }
+                  lines:
+                    - { accountCode: '6100', direction: DEBIT, amount: '1250.00', currency: USD, memo: EC2 + RDS }
+                    - { accountCode: '1000', direction: CREDIT, amount: '1250.00', currency: USD }
+      responses:
+        '201':
+          description: Transaction posted
+          headers:
+            Location:
+              schema: { type: string, example: /api/v1/ledger/transaction/5ece6ef5-c230-4a41-bbe0-22d0792ca4b1 }
+            X-Request-Id: { $ref: '#/components/headers/RequestId' }
+            X-RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            X-RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransactionResponse' }
+        '200':
+          description: Idempotent replay of an already-posted transaction
+          headers:
+            Idempotent-Replayed:
+              schema: { type: string, enum: ['true'] }
+            X-Request-Id: { $ref: '#/components/headers/RequestId' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransactionResponse' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TenantNotFound'
+        '409':
+          description: Idempotency key reused with a different body, or the period is closed
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+              examples:
+                keyReused:
+                  value:
+                    type: https://ledger.dev/problems/idempotency-key-reused
+                    title: Idempotency-Key was already used for a different request
+                    status: 409
+                    detail: Idempotency-Key was already used for a different transaction
+                    instance: /api/v1/ledger/transaction
+                    code: IDEMPOTENCY_KEY_REUSED
+                    retryable: false
+                    requestId: f61696b1-8cf1-4a3c-87c3-a1169434dd6e
+                    tenant: acme
+                    transactionId: 5ece6ef5-c230-4a41-bbe0-22d0792ca4b1
+        '422':
+          description: Business rule violation (unbalanced, unknown account, insufficient funds, ...)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+              examples:
+                unbalanced:
+                  value:
+                    type: https://ledger.dev/problems/ledger-unbalanced
+                    title: Debits and credits do not balance
+                    status: 422
+                    detail: Debits and credits do not balance
+                    instance: /api/v1/ledger/transaction
+                    code: LEDGER_UNBALANCED
+                    retryable: false
+                    requestId: 0480f010-8a16-479a-926d-8ac2fc14f4bc
+                    tenant: acme
+                    errors: [{ field: postTransactionRequest, message: debits and credits differ by 1 USD }]
+                insufficientFunds:
+                  value:
+                    type: https://ledger.dev/problems/insufficient-funds
+                    title: Insufficient funds
+                    status: 422
+                    code: INSUFFICIENT_FUNDS
+                    retryable: false
+                unknownAccount:
+                  value:
+                    type: https://ledger.dev/problems/account-not-found
+                    title: Unknown account
+                    status: 422
+                    detail: 'Unknown account(s): 6000'
+                    code: ACCOUNT_NOT_FOUND
+                    retryable: false
+                    accountCodes: ['6000']
+        '423':
+          $ref: '#/components/responses/TenantUnavailable'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          description: Tenant posting concurrency exhausted or lock contention; safe to retry with the same Idempotency-Key
+          headers:
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/ledger/transaction/{id}:
+    get:
+      tags: [Ledger]
+      operationId: getTransaction
+      summary: Fetch a posted transaction
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The transaction
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransactionResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such transaction in this tenant (code `TRANSACTION_NOT_FOUND`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/ledger/accounts:
+    get:
+      tags: [Ledger]
+      operationId: listAccounts
+      summary: Chart of accounts with current balances
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        '200':
+          description: All accounts of the tenant
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Account' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Ledger]
+      operationId: createAccount
+      summary: Create an account
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAccountRequest' }
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Account code already exists (code `ACCOUNT_CODE_EXISTS`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/analytics/balance-sheet:
+    get:
+      tags: [Analytics]
+      operationId: getBalanceSheet
+      summary: Comparative multi-period balance sheet
+      description: |
+        Balance sheet as of the end of each month in the window `[asOf - periods + 1, asOf]`,
+        built from monthly roll-ups in a single REPEATABLE READ snapshot, so every column is
+        internally consistent even while postings stream in. Liabilities and equity are
+        presented credit-positive; `currentEarnings` is revenue minus expenses not yet closed.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: asOf
+          in: query
+          description: Last month of the window (defaults to the current month)
+          schema: { type: string, pattern: '^\d{4}-(0[1-9]|1[0-2])$', example: '2026-10' }
+        - name: periods
+          in: query
+          description: Number of monthly columns
+          schema: { type: integer, minimum: 1, maximum: 24, default: 3 }
+        - name: currency
+          in: query
+          description: Report currency (defaults to the tenant's base currency); only accounts in this currency are included
+          schema: { type: string, pattern: '^[A-Z]{3}$', example: USD }
+      responses:
+        '200':
+          description: The balance sheet
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BalanceSheet' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '423': { $ref: '#/components/responses/TenantUnavailable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/ai/audit/query:
+    post:
+      tags: [AI Audit]
+      operationId: aiAuditQuery
+      summary: Ask a natural-language question about the tenant's finances
+      description: |
+        Answers questions such as *"Find anomalies in our Q3 cloud spending and compare it to
+        Q2"*. The model never sees raw SQL or other tenants' data: it can only call a fixed set
+        of parameterised, read-only ledger tools executed inside the caller's tenant context,
+        and vector retrieval is filtered by `tenant_id` metadata.
+
+        Content negotiation:
+        - `Accept: application/json` returns the complete `AuditInsightResponse`.
+        - `Accept: text/event-stream` streams Server-Sent Events: `token` events carry text
+          deltas, `finding` events carry structured findings as they are produced, and a final
+          `done` event carries the full `AuditInsightResponse`. Failures after the stream has
+          started arrive as an `error` event with a `Problem` payload.
+
+        Requires a role with AI access (not VIEWER). Subject to the per-tenant AI rate limit
+        and a per-tenant monthly token budget (`AI_BUDGET_EXCEEDED`).
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuditQueryRequest' }
+            example:
+              query: Find anomalies in our Q3 cloud spending and compare it to Q2
+              from: '2026-04'
+              to: '2026-09'
+      responses:
+        '200':
+          description: Insight (JSON) or an SSE stream of the insight
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            X-RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditInsightResponse' }
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  SSE stream; each event's `data` is JSON: `token` -> `{"text": "..."}`,
+                  `finding` -> `AuditFinding`, `done` -> `AuditInsightResponse`, `error` -> `Problem`.
+              example: |
+                event: token
+                data: {"text":"Cloud spend in Q3 rose "}
+
+                event: finding
+                data: {"type":"ANOMALY","severity":"HIGH","title":"AWS spend spike in August","accountCode":"6100","period":"2026-08","amount":"18400.00","currency":"USD","baseline":"9100.00"}
+
+                event: done
+                data: {"queryId":"0f8f...","answer":"Cloud spend in Q3 rose 41% ...","findings":[...],"usage":{"model":"gpt-4o-mini","promptTokens":1840,"completionTokens":312,"cached":false}}
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '423': { $ref: '#/components/responses/TenantUnavailable' }
+        '429':
+          description: Gateway AI rate limit hit (`RATE_LIMITED`) or monthly token budget exhausted (`AI_BUDGET_EXCEEDED`)
+          headers:
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: AI provider unavailable (`AI_PROVIDER_UNAVAILABLE`); retryable
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/tenants:
+    get:
+      tags: [Admin]
+      operationId: listTenants
+      summary: List tenants
+      responses:
+        '200':
+          description: All tenants
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Tenant' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin]
+      operationId: provisionTenant
+      summary: Provision a tenant
+      description: |
+        Registers the tenant, creates its schema (in the shared cluster for `SHARED`, or in the
+        supplied empty database for `ISOLATED`), runs the tenant migrations, optionally seeds a
+        default chart of accounts, and activates it. A tenant left in `PROVISIONING` by a crash
+        is resumed by repeating the call.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProvisionTenantRequest' }
+            examples:
+              shared:
+                value: { slug: initech, displayName: Initech, tier: SHARED, baseCurrency: USD }
+              isolated:
+                value:
+                  slug: umbrella
+                  displayName: Umbrella Corp
+                  tier: ISOLATED
+                  baseCurrency: EUR
+                  isolatedDatabase:
+                    jdbcUrl: jdbc:postgresql://db-umbrella:5432/ledger_umbrella
+                    username: ledger
+                    secretRef: env:UMBRELLA_DB_PASSWORD
+                    poolMaxSize: 10
+      responses:
+        '201':
+          description: Tenant provisioned and active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Tenant already exists (`TENANT_EXISTS`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: Provisioning failed (`TENANT_PROVISIONING_FAILED`); safe to retry
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/tenants/{slug}:
+    get:
+      tags: [Admin]
+      operationId: getTenant
+      summary: Get a tenant
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+      responses:
+        '200':
+          description: The tenant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+
+  /api/v1/admin/tenants/{slug}/suspend:
+    post:
+      tags: [Admin]
+      operationId: suspendTenant
+      summary: Suspend a tenant (its API calls then fail with 423)
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+      responses:
+        '200':
+          description: Suspended
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+
+  /api/v1/admin/tenants/{slug}/activate:
+    post:
+      tags: [Admin]
+      operationId: activateTenant
+      summary: Re-activate a suspended tenant
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+      responses:
+        '200':
+          description: Active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Keycloak access token (realm `ledger`, audience `ledger-api`)
+
+  parameters:
+    TenantId:
+      name: X-Tenant-ID
+      in: header
+      required: true
+      description: Tenant slug; must be one of the caller's tenants (token `tenants` claim)
+      schema: { type: string, pattern: '^[a-z][a-z0-9_]{2,47}$', example: acme }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-generated unique key per logical transaction (e.g. a UUID); retries must reuse it
+      schema: { type: string, pattern: '^[A-Za-z0-9._:-]{8,128}$', example: 0b9c2a3e-6f1d-4d39-9a7e-2f4f0b3c9d11 }
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: Correlation id; generated by the gateway when absent and echoed on the response
+      schema: { type: string, pattern: '^[A-Za-z0-9._-]{8,64}$' }
+    Slug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-z][a-z0-9_]{2,47}$' }
+
+  headers:
+    RequestId:
+      description: Correlation id of this request
+      schema: { type: string }
+    RateLimitLimit:
+      description: Bucket capacity for this tenant and endpoint class
+      schema: { type: integer }
+    RateLimitRemaining:
+      description: Requests left in the bucket
+      schema: { type: integer }
+    RetryAfter:
+      description: Seconds to wait before retrying
+      schema: { type: integer }
+
+  responses:
+    BadRequest:
+      description: Malformed request or validation failure
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          examples:
+            missingTenant:
+              value:
+                type: https://ledger.dev/problems/tenant-header-missing
+                title: X-Tenant-ID header is required
+                status: 400
+                code: TENANT_HEADER_MISSING
+                retryable: false
+            validation:
+              value:
+                type: https://ledger.dev/problems/validation-failed
+                title: Request validation failed
+                status: 400
+                code: VALIDATION_FAILED
+                retryable: false
+                errors: [{ field: 'lines[0].amount', message: must be greater than 0 }]
+    Unauthenticated:
+      description: Missing, expired or invalid access token
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Caller is not a member of the tenant (`TENANT_ACCESS_DENIED`) or its role lacks the permission (`PERMISSION_DENIED`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://ledger.dev/problems/tenant-access-denied
+            title: No access to this tenant
+            status: 403
+            detail: You are not a member of tenant umbrella
+            code: TENANT_ACCESS_DENIED
+            retryable: false
+    TenantNotFound:
+      description: Tenant does not exist (`TENANT_NOT_FOUND`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TenantUnavailable:
+      description: Tenant is suspended or still provisioning (`TENANT_UNAVAILABLE`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RateLimited:
+      description: Per-tenant rate limit exceeded (`RATE_LIMITED`)
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+        X-RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+        X-RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    Money:
+      description: Decimal amount, up to 16 integer and 4 fractional digits
+      type: string
+      pattern: '^\d{1,16}(\.\d{1,4})?$'
+      example: '1250.00'
+    Currency:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      example: USD
+    Direction:
+      type: string
+      enum: [DEBIT, CREDIT]
+    AccountType:
+      type: string
+      enum: [ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE]
+
+    PostTransactionRequest:
+      type: object
+      required: [effectiveDate, description, lines]
+      properties:
+        effectiveDate:
+          type: string
+          format: date
+          description: Accounting date; its period must be open
+        description: { type: string, maxLength: 500 }
+        externalRef: { type: string, maxLength: 128, description: 'Reference in the source system, e.g. invoice number or bank transaction id' }
+        metadata:
+          type: object
+          maxProperties: 50
+          additionalProperties: true
+        lines:
+          type: array
+          minItems: 2
+          maxItems: 500
+          description: Per currency, sum(DEBIT amounts) must equal sum(CREDIT amounts)
+          items: { $ref: '#/components/schemas/PostingLine' }
+    PostingLine:
+      type: object
+      required: [accountCode, direction, amount, currency]
+      properties:
+        accountCode: { type: string, maxLength: 32, example: '6100' }
+        direction: { $ref: '#/components/schemas/Direction' }
+        amount:
+          allOf: [{ $ref: '#/components/schemas/Money' }]
+          description: Strictly positive; the sign comes from `direction`
+        currency:
+          allOf: [{ $ref: '#/components/schemas/Currency' }]
+          description: Must equal the account's currency
+        memo: { type: string, maxLength: 500 }
+
+    TransactionResponse:
+      type: object
+      required: [id, entryNo, idempotencyKey, effectiveDate, postedAt, description, source, lines, totals]
+      properties:
+        id: { type: string, format: uuid }
+        entryNo: { type: integer, format: int64, description: Gap-free per-tenant sequence number }
+        idempotencyKey: { type: string }
+        effectiveDate: { type: string, format: date }
+        postedAt: { type: string, format: date-time }
+        description: { type: string }
+        source: { type: string, enum: [API, SEC_EDGAR, PAYSIM, RECONCILIATION, REVERSAL, SYSTEM], example: API }
+        externalRef: { type: string, nullable: true }
+        metadata: { type: object, additionalProperties: true }
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              lineNo: { type: integer }
+              accountCode: { type: string }
+              accountName: { type: string }
+              direction: { $ref: '#/components/schemas/Direction' }
+              amount: { type: number, example: 1250.0 }
+              currency: { $ref: '#/components/schemas/Currency' }
+              memo: { type: string, nullable: true }
+        totals:
+          type: array
+          items:
+            type: object
+            properties:
+              currency: { $ref: '#/components/schemas/Currency' }
+              debits: { type: number }
+              credits: { type: number }
+        chainSeq:
+          type: integer
+          format: int64
+          nullable: true
+          description: Position in the tenant's tamper-evident hash chain
+        entryHash:
+          type: string
+          nullable: true
+          description: Hex SHA-256 of this entry chained to the previous one
+          example: 9f2c4e0d7b1a...
+
+    Account:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        code: { type: string, example: '1000' }
+        name: { type: string, example: Operating Cash }
+        type: { $ref: '#/components/schemas/AccountType' }
+        normalBalance: { $ref: '#/components/schemas/Direction' }
+        currency: { $ref: '#/components/schemas/Currency' }
+        category: { type: string, nullable: true, example: CLOUD }
+        allowNegative: { type: boolean, description: 'When false, postings that would overdraw the account fail with INSUFFICIENT_FUNDS' }
+        active: { type: boolean }
+        parentCode: { type: string, nullable: true }
+        debitTotal: { type: number }
+        creditTotal: { type: number }
+        balance: { type: number, description: Balance in the account's normal direction (positive = normal) }
+    CreateAccountRequest:
+      type: object
+      required: [code, name, type, currency]
+      properties:
+        code: { type: string, maxLength: 32, pattern: '^[A-Za-z0-9._-]+$' }
+        name: { type: string, maxLength: 200 }
+        type: { $ref: '#/components/schemas/AccountType' }
+        normalBalance:
+          allOf: [{ $ref: '#/components/schemas/Direction' }]
+          description: Defaults to DEBIT for assets/expenses, CREDIT otherwise
+        currency: { $ref: '#/components/schemas/Currency' }
+        category: { type: string, maxLength: 64 }
+        allowNegative: { type: boolean }
+        parentCode: { type: string, maxLength: 32 }
+        externalRef: { type: string, maxLength: 128 }
+
+    BalanceSheet:
+      type: object
+      description: Every amount list is aligned with `periods` (oldest first)
+      properties:
+        tenant: { type: string }
+        currency: { $ref: '#/components/schemas/Currency' }
+        periods:
+          type: array
+          items: { type: string, example: '2026-10' }
+        assets: { $ref: '#/components/schemas/BalanceSheetSection' }
+        liabilities: { $ref: '#/components/schemas/BalanceSheetSection' }
+        equity: { $ref: '#/components/schemas/BalanceSheetSection' }
+        currentEarnings:
+          type: array
+          items: { type: number }
+        totalLiabilitiesAndEquity:
+          type: array
+          items: { type: number }
+        balanced:
+          type: array
+          description: assets == liabilities + equity + current earnings, per period
+          items: { type: boolean }
+    BalanceSheetSection:
+      type: object
+      properties:
+        type: { type: string, enum: [ASSET, LIABILITY, EQUITY] }
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              accountCode: { type: string }
+              accountName: { type: string }
+              amounts:
+                type: array
+                items: { type: number }
+        totals:
+          type: array
+          items: { type: number }
+
+    AuditQueryRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 3
+          maxLength: 2000
+          example: Find anomalies in our Q3 cloud spending and compare it to Q2
+        from:
+          type: string
+          pattern: '^\d{4}-(0[1-9]|1[0-2])$'
+          description: Optional first month to consider (the model may narrow it further)
+        to:
+          type: string
+          pattern: '^\d{4}-(0[1-9]|1[0-2])$'
+        currency: { $ref: '#/components/schemas/Currency' }
+    AuditInsightResponse:
+      type: object
+      required: [queryId, answer, findings, usage]
+      properties:
+        queryId: { type: string, format: uuid, description: Id of the persisted `ai_audit_logs` row }
+        answer: { type: string, description: Natural-language summary (Markdown) }
+        findings:
+          type: array
+          items: { $ref: '#/components/schemas/AuditFinding' }
+        toolCalls:
+          type: array
+          description: Ledger tools the model invoked (for transparency/auditing)
+          items:
+            type: object
+            properties:
+              name: { type: string, example: spendByCategory }
+              arguments: { type: object, additionalProperties: true }
+        sources:
+          type: array
+          description: Past insights retrieved from the tenant's vector store
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              score: { type: number }
+              summary: { type: string }
+        usage:
+          type: object
+          properties:
+            model: { type: string, example: gpt-4o-mini }
+            promptTokens: { type: integer }
+            completionTokens: { type: integer }
+            cached: { type: boolean, description: Served from the semantic answer cache without an LLM call }
+    AuditFinding:
+      type: object
+      required: [type, severity, title]
+      properties:
+        type: { type: string, enum: [ANOMALY, TREND, COMPARISON, OBSERVATION] }
+        severity: { type: string, enum: [LOW, MEDIUM, HIGH] }
+        title: { type: string }
+        detail: { type: string }
+        accountCode: { type: string, nullable: true }
+        category: { type: string, nullable: true }
+        period: { type: string, nullable: true, example: '2026-08' }
+        amount: { type: string, pattern: '^-?\d{1,16}(\.\d{1,4})?$', nullable: true, example: '18400.00' }
+        baseline: { type: string, pattern: '^-?\d{1,16}(\.\d{1,4})?$', nullable: true, description: Expected value the finding is compared against }
+        currency: { type: string, pattern: '^[A-Z]{3}$', nullable: true }
+
+    Tenant:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        displayName: { type: string }
+        tier: { type: string, enum: [SHARED, ISOLATED] }
+        status: { type: string, enum: [PROVISIONING, ACTIVE, SUSPENDED, OFFBOARDED] }
+        schemaName: { type: string, example: t_acme }
+        baseCurrency: { $ref: '#/components/schemas/Currency' }
+    ProvisionTenantRequest:
+      type: object
+      required: [slug, displayName]
+      properties:
+        slug: { type: string, pattern: '^[a-z][a-z0-9_]{2,47}$' }
+        displayName: { type: string, maxLength: 200 }
+        tier: { type: string, enum: [SHARED, ISOLATED], default: SHARED }
+        baseCurrency: { allOf: [{ $ref: '#/components/schemas/Currency' }], default: USD }
+        seedChartOfAccounts: { type: boolean, default: true }
+        isolatedDatabase:
+          type: object
+          description: Required for ISOLATED, forbidden for SHARED. Points at an existing, empty database.
+          required: [jdbcUrl, username, secretRef]
+          properties:
+            jdbcUrl: { type: string, pattern: '^jdbc:postgresql://.+' }
+            username: { type: string, maxLength: 63 }
+            secretRef: { type: string, pattern: '^(env|file):.+', description: Where the password is read from; never the password itself }
+            poolMaxSize: { type: integer, minimum: 1, maximum: 200, default: 10 }
+
+    Problem:
+      type: object
+      description: RFC 9457 problem details with ledger extensions
+      required: [type, title, status, code, retryable]
+      properties:
+        type: { type: string, format: uri, example: https://ledger.dev/problems/ledger-unbalanced }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        retryable: { type: boolean, description: Whether the same request may succeed if retried (with the same Idempotency-Key) }
+        requestId: { type: string }
+        tenant: { type: string }
+        errors:
+          type: array
+          description: Field-level validation errors
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
+      additionalProperties: true
+    ErrorCode:
+      type: string
+      enum:
+        - VALIDATION_FAILED
+        - MALFORMED_REQUEST
+        - TENANT_HEADER_MISSING
+        - TENANT_HEADER_INVALID
+        - IDEMPOTENCY_KEY_MISSING
+        - IDEMPOTENCY_KEY_INVALID
+        - UNAUTHENTICATED
+        - TENANT_ACCESS_DENIED
+        - PERMISSION_DENIED
+        - TENANT_NOT_FOUND
+        - TRANSACTION_NOT_FOUND
+        - RESOURCE_NOT_FOUND
+        - IDEMPOTENCY_KEY_REUSED
+        - ACCOUNT_CODE_EXISTS
+        - TENANT_EXISTS
+        - JOURNAL_SEALED
+        - LEDGER_IMMUTABLE
+        - PERIOD_CLOSED
+        - LEDGER_UNBALANCED
+        - INSUFFICIENT_LINES
+        - ACCOUNT_NOT_FOUND
+        - ACCOUNT_INACTIVE
+        - CURRENCY_MISMATCH
+        - INSUFFICIENT_FUNDS
+        - PERIOD_NOT_OPEN
+        - TENANT_UNAVAILABLE
+        - RATE_LIMITED
+        - AI_BUDGET_EXCEEDED
+        - AI_PROVIDER_UNAVAILABLE
+        - TENANT_BUSY
+        - LEDGER_CONTENTION
+        - TENANT_PROVISIONING_FAILED
+        - INTERNAL_ERROR

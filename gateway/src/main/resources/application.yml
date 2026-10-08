@@ -1,21 +1,59 @@
 server:
   port: 8080
+  shutdown: graceful
 
 spring:
   application:
     name: gateway
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${LEDGER_OIDC_ISSUER:http://localhost:8180/realms/ledger}
+          # Explicit JWKS URL: the gateway starts without contacting Keycloak (issuer is still validated).
+          jwk-set-uri: ${LEDGER_OIDC_JWKS:http://localhost:8180/realms/ledger/protocol/openid-connect/certs}
+          audiences: ledger-api
   cloud:
     gateway:
       server:
         webflux:
+          httpclient:
+            connect-timeout: 2000
+            response-timeout: 60s # AI SSE streams are long-lived; ledger calls finish well within this
+          default-filters:
+            # The gateway already set these; the backend echoes X-Request-Id back.
+            - DedupeResponseHeader=X-Request-Id, RETAIN_FIRST
           routes:
             - id: ledger-service
               uri: ${LEDGER_SERVICE_URL:http://localhost:8081}
               predicates:
                 - Path=/api/**
 
+gateway:
+  cors:
+    allowed-origins: ${GATEWAY_CORS_ORIGINS:http://localhost:5173}
+  rate-limit:
+    api:
+      capacity: ${GATEWAY_API_BURST:200}
+      refill-tokens: ${GATEWAY_API_RATE:100}
+      refill-period: 1s
+    ai:
+      capacity: ${GATEWAY_AI_BURST:10}
+      refill-tokens: ${GATEWAY_AI_RATE:10}
+      refill-period: 1m
+    admin:
+      capacity: 30
+      refill-tokens: 30
+      refill-period: 1m
+    idle-eviction: 15m
+    max-tracked-keys: 100000
+
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
+
+logging:
+  level:
+    org.springframework.cloud.gateway: INFO

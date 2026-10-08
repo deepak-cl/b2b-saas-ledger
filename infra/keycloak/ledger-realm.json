@@ -1,0 +1,131 @@
+{
+  "realm": "ledger",
+  "enabled": true,
+  "displayName": "Ledger",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "bruteForceProtected": true,
+  "roles": {
+    "realm": [
+      {
+        "name": "PLATFORM_ADMIN",
+        "description": "Operates the SaaS: provisions and suspends tenants. Grants no access to tenant ledgers."
+      }
+    ]
+  },
+  "groups": [
+    {
+      "name": "tenants",
+      "subGroups": [
+        {
+          "name": "acme",
+          "subGroups": [
+            { "name": "OWNER" },
+            { "name": "ADMIN" },
+            { "name": "ACCOUNTANT" },
+            { "name": "AUDITOR" },
+            { "name": "VIEWER" }
+          ]
+        },
+        {
+          "name": "globex",
+          "subGroups": [
+            { "name": "OWNER" },
+            { "name": "ADMIN" },
+            { "name": "ACCOUNTANT" },
+            { "name": "AUDITOR" },
+            { "name": "VIEWER" }
+          ]
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "ledger-api",
+      "name": "Ledger API (audience)",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "implicitFlowEnabled": false
+    },
+    {
+      "clientId": "ledger-web",
+      "name": "Ledger Web App",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "redirectUris": ["http://localhost:5173/*"],
+      "webOrigins": ["http://localhost:5173"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5173/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "tenant-memberships",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "tenants",
+            "full.path": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "ledger-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "ledger-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "email": "alice@acme.test",
+      "firstName": "Alice",
+      "lastName": "Accountant",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "alice", "temporary": false }],
+      "groups": ["/tenants/acme/ACCOUNTANT", "/tenants/globex/VIEWER"]
+    },
+    {
+      "username": "bob",
+      "email": "bob@globex.test",
+      "firstName": "Bob",
+      "lastName": "Owner",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "bob", "temporary": false }],
+      "groups": ["/tenants/globex/OWNER"]
+    },
+    {
+      "username": "platform-admin",
+      "email": "ops@ledger.test",
+      "firstName": "Platform",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "platform-admin", "temporary": false }],
+      "realmRoles": ["default-roles-ledger", "PLATFORM_ADMIN"]
+    }
+  ]
+}

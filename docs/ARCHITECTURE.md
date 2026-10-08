@@ -1,6 +1,6 @@
 # Architecture: Multi-Tenant B2B SaaS Ledger & Financial Analytics Engine
 
-Status: Shot 1 (foundation). Schema verified by `infra/db/verify-schema.sh`.
+Status: Shot 2 (routing, security, ledger API). Schema: `infra/db/verify-schema.sh`. API contract: `docs/api/openapi.yaml`. E2E: `infra/scripts/e2e.sh`.
 
 | Concern | Choice |
 |---|---|
@@ -305,11 +305,34 @@ Upgrades run the same tenant migrations across all tenants in parallel batches a
 
 ---
 
-## 8. Verifying the schema locally
+## 8. Shot 2: request path, security, and API
+
+The client never talks to the database. Every tenant-scoped call follows the same path:
+
+1. **Gateway** (`:8080`) validates the JWT (issuer, signature, audience `ledger-api`), requires `X-Tenant-ID` to appear as `/tenants/<slug>/<ROLE>` in the signed `tenants` claim, assigns `X-Request-Id`, and consumes a per-tenant Bucket4j token (a separate, much smaller bucket for `/api/v1/ai/**`).
+2. **ledger-service** (`:8081`) is also a resource server and repeats the membership check, then looks the slug up in the control plane: unknown -> `TENANT_NOT_FOUND`, not `ACTIVE` -> `TENANT_UNAVAILABLE`.
+3. **`TenantContext`** is bound for the request (and copied onto `@Async` / batch threads by `TenantContextTaskDecorator`). `TenantRoutingDataSource` picks the Hikari pool for `datasource_id`; Hibernate's schema provider runs `Connection.setSchema(t_<slug>)`.
+4. **Method security** (`@PreAuthorize("@tenantSecurity.has('LEDGER_POST')")`) reads the role from the context, not from a header.
+
+`X-Tenant-ID` is never rewritten from the token: a user can belong to several tenants (workspace switcher). The signed claim is the allow-list; a spoofed header for a tenant the caller is not in is `403 TENANT_ACCESS_DENIED` at the gateway, before a backend connection is used.
+
+Admin calls (`/api/v1/admin/**`) skip the tenant header and require the realm role `PLATFORM_ADMIN`. Provisioning is idempotent: a tenant stuck in `PROVISIONING` can be retried; Flyway per schema makes that safe.
+
+Errors are RFC 9457 `application/problem+json` with a stable `code` (`docs/api/openapi.yaml`). Database trigger SQLSTATEs `LG001`–`LG007` map onto those codes, including failures raised at COMMIT by the deferred seal trigger.
+
+Posting is idempotent per `Idempotency-Key` (fingerprint of the canonical body): same key + same body replays (`200`, `Idempotent-Replayed: true`); same key + different body is `409 IDEMPOTENCY_KEY_REUSED`. Concurrent postings of one tenant are capped by a Resilience4j bulkhead (`TENANT_BUSY`) so one noisy tenant cannot exhaust the shared pool.
+
+The AI route is wired (role `AI_QUERY`, gateway AI bucket) but returns a Shot-4 placeholder; no LLM is called.
+
+## 9. Verifying locally
 
 ```bash
 docker compose -f infra/docker-compose.yml up -d --wait
-RESET=1 infra/db/verify-schema.sh
+RESET=1 infra/db/verify-schema.sh          # schema invariants
+./gradlew test                             # Testcontainers + mock JWTs; no Keycloak, no LLM
+./gradlew :ledger-service:bootRun          # :8081
+./gradlew :gateway:bootRun                 # :8080
+infra/scripts/e2e.sh                       # real Keycloak tokens through the gateway
 ```
 
-The script applies both migrations with the Flyway CLI, provisions tenants `acme` and `globex`, and runs `infra/db/smoke-test.sql`: placement, partitions and indexes, balanced posting with balance and rollup maintenance, every violation in section 4, tamper detection, vector-store tenancy guards, and a real COMMIT failure that leaves no trace.
+Demo users (realm `ledger`, password = username): `alice` (Acme accountant + Globex viewer), `bob` (Globex owner), `platform-admin`.

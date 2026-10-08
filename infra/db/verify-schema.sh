@@ -30,8 +30,10 @@ if [[ "${RESET:-0}" == "1" ]]; then
 fi
 
 echo "==> Migrating control plane"
+# The registered shared-datasource URL is what ledger-service (running on the host in
+# development) uses to reach tenant schemas, so it must be the host-side address.
 flyway -schemas=public,ai -locations=filesystem:/migrations/control \
-  -placeholders.shared_jdbc_url=jdbc:postgresql://postgres:5432/ledger \
+  -placeholders.shared_jdbc_url="${SHARED_JDBC_URL:-jdbc:postgresql://localhost:5432/ledger}" \
   -placeholders.shared_db_username=ledger \
   -placeholders.shared_db_secret_ref=env:LEDGER_DB_PASSWORD
 
