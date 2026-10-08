@@ -1,0 +1,38 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: ledger-service
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${LEDGER_DB_URL:jdbc:postgresql://localhost:5432/ledger}
+    username: ${LEDGER_DB_USER:ledger}
+    password: ${LEDGER_DB_PASSWORD:ledger}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    # Control plane only; tenant schemas are migrated per tenant at provisioning time.
+    locations: classpath:db/migration/control
+    schemas: public,ai
+    placeholders:
+      shared_jdbc_url: ${spring.datasource.url}
+      shared_db_username: ${spring.datasource.username}
+      shared_db_secret_ref: env:LEDGER_DB_PASSWORD
+      embedding_dimensions: ${ledger.ai.embedding-dimensions}
+
+ledger:
+  ai:
+    # Must match the active embedding model (OpenAI text-embedding-3-small = 1536).
+    # Changing it requires re-embedding and a new migration.
+    embedding-dimensions: ${LEDGER_EMBEDDING_DIMENSIONS:1536}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
