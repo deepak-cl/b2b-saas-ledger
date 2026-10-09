@@ -1,0 +1,26 @@
+meta {
+  name: Balance sheet
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{gateway}}/api/v1/analytics/balance-sheet
+  body: none
+  auth: inherit
+}
+
+headers {
+  X-Tenant-ID: {{tenant}}
+}
+
+params:query {
+  periods: 6
+  currency: USD
+}
+
+docs {
+  operationId: getBalanceSheet.
+  Six monthly columns ending at the current month, in one REPEATABLE READ snapshot.
+  Optional asOf is a month, for example 2026-10.
+}

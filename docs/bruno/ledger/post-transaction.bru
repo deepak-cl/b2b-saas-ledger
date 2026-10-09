@@ -1,0 +1,45 @@
+meta {
+  name: Post transaction
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{gateway}}/api/v1/ledger/transaction
+  body: json
+  auth: inherit
+}
+
+headers {
+  X-Tenant-ID: {{tenant}}
+  Idempotency-Key: {{idempotencyKey}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "effectiveDate": "2026-10-09",
+    "description": "AWS invoice 2026-09",
+    "externalRef": "INV-AWS-2026-09",
+    "metadata": { "vendor": "aws", "costCenter": "platform" },
+    "lines": [
+      { "accountCode": "6100", "direction": "DEBIT", "amount": "1250.00", "currency": "USD", "memo": "EC2 + RDS" },
+      { "accountCode": "1000", "direction": "CREDIT", "amount": "1250.00", "currency": "USD" }
+    ]
+  }
+}
+
+script:post-response {
+  const body = res.getBody();
+  if (body && body.id) {
+    bru.setEnvVar("transactionId", body.id);
+  }
+}
+
+docs {
+  operationId: postTransaction.
+  Debit 6100 Cloud Infrastructure, credit 1000 Operating Cash.
+  The first response is 201. The same key and body replay as 200 with Idempotent-Replayed: true.
+  Change the Local variable idempotencyKey before posting a different body.
+  A company without those accounts returns 422 ACCOUNT_NOT_FOUND.
+}

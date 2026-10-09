@@ -1,0 +1,20 @@
+meta {
+  name: PaySim job
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{gateway}}/api/v1/admin/ingestion/jobs/{{jobId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  operationId: getPaySimJob.
+  Run Start PaySim import first. status becomes COMPLETED when the batch job finishes.
+}

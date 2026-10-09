@@ -1,0 +1,21 @@
+meta {
+  name: Get transaction
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{gateway}}/api/v1/ledger/transaction/{{transactionId}}
+  body: none
+  auth: inherit
+}
+
+headers {
+  X-Tenant-ID: {{tenant}}
+}
+
+docs {
+  operationId: getTransaction.
+  Run Post transaction first so transactionId is set.
+  A missing id in this tenant is 404 TRANSACTION_NOT_FOUND.
+}

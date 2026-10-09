@@ -1,6 +1,6 @@
 # Architecture: Multi-Tenant B2B SaaS Ledger & Financial Analytics Engine
 
-Status: Shot 5 (ledger web). Schema: `infra/db/verify-schema.sh`. API contract: `docs/api/openapi.yaml`. E2E: `infra/scripts/e2e.sh`. Web: `frontend/`.
+Status: Shot 7 (README, system spec, Bruno). Schema: `infra/db/verify-schema.sh`. API contract: `docs/api/openapi.yaml`. Bruno: `docs/bruno/`. E2E: `infra/scripts/e2e.sh`. Web: `frontend/`. Shot 6 (deploy, CI, observability) is not in this repository.
 
 | Concern | Choice |
 |---|---|
@@ -341,18 +341,18 @@ External data enters through the same posting path as the API, with `journal_ent
 The model does not write SQL and does not see other tenants:
 
 - Retrieval uses `ai.vector_store` with `Filter.Expression tenant_id == <current tenant>`. Only a short summary of the question and answer is embedded, and the same text is not embedded twice (content hash). New connections of the database role use `hnsw.iterative_scan = relaxed_order` when that pgvector setting is available.
-- The service runs one whitelist tool for the question: spending anomalies from `account_period_balances`, or, when the question contains `readonly:`, a single SELECT. Those tools are also registered on `ChatClient`, so a real model can call `accountBalances`, `monthlyActivity`, `spendingAnomalies`, `comparePeriods`, and `runReadOnlyQuery`.
+- The service runs one whitelist tool chosen from the question text: `readonly:` runs a single SELECT; anomaly, spike, or jump runs `spendingAnomalies`; a monthly trend runs `monthlyActivity`; every other question runs `accountBalances`. Those tools are also registered on `ChatClient`. The stub narrates the tool result the service already produced, so a cash question is not answered as a spike check.
 - `runReadOnlyQuery` is parsed with JSqlParser (one SELECT, ledger tables only, no system functions, no other schema) and then executed as the `ledger_ai_reader` role, which has `SELECT` only, inside a read-only transaction with `statement_timeout`.
 
 Spend controls: a per-tenant Resilience4j limiter, a calendar-month token budget (`429 AI_BUDGET_EXCEEDED`), a bulkhead and circuit breaker around the model (`503 AI_PROVIDER_UNAVAILABLE`), a short cache for the same question and ledger version, and a cap on output tokens. Every call is appended to `ai_audit_logs`.
 
-No profile uses the stub (`spring.ai.model.chat=none`). `openai` (gpt-4o-mini, text-embedding-3-small), `anthropic` (Claude Haiku; embeddings stay local unless you point them at OpenAI or Ollama), and `ollama` switch the model. The embedding width stays 1536 unless `LEDGER_EMBEDDING_DIMENSIONS` and a new migration change it.
+The default profile uses the stub (`spring.ai.model.chat=none`). `openai` (gpt-4o-mini, text-embedding-3-small), `anthropic` (Claude Haiku; embeddings stay local unless you point them at OpenAI or Ollama), and `ollama` switch the model. The embedding width stays 1536 unless `LEDGER_EMBEDDING_DIMENSIONS` and a new migration change it.
 
 ## 11. Shot 5: ledger web
 
 `frontend/` is a Vite + React + TypeScript app on port 5173. The dev server proxies `/api` to the gateway and `/realms` to Keycloak, so the browser stays on one origin. Sign-in uses the public `ledger-web` client (password = username for the demo users). The workspace switcher lists every `/tenants/<slug>/<ROLE>` in the access token; `X-Tenant-ID` follows the selection. A viewer can read and cannot post or ask.
 
-The ledger grid virtualizes with `@tanstack/react-virtual`, so 10,000 lines mount only the rows in view. "Load 10,000-line sample" (and the unsigned preview) fills that grid locally; lines posted in the session come from `POST /api/v1/ledger/transaction`. The balance-sheet chart is Recharts over `GET /api/v1/analytics/balance-sheet`. ⌘K opens a cmdk bar that streams `POST /api/v1/ai/audit/query` as `token`, `finding`, and `done` events.
+The ledger grid virtualizes with `@tanstack/react-virtual`, so 10,000 lines mount only the rows in view. There is no list-transactions API, so the grid shows journals posted in this browser session plus an optional local 10,000-line sample. The balance-sheet chart is Recharts over `GET /api/v1/analytics/balance-sheet`. Ask opens a dialog whose search field streams `POST /api/v1/ai/audit/query` as `token`, `finding`, and `done` events. The desk is a local client, not a finished product UI.
 
 ## 12. Verifying locally
 
@@ -367,3 +367,7 @@ infra/scripts/e2e.sh                       # real Keycloak tokens through the ga
 ```
 
 Demo users (realm `ledger`, password = username): `alice` (Acme accountant + Globex viewer), `bob` (Globex owner), `platform-admin`.
+
+## 13. Shot 7: portfolio docs
+
+`README.md` is the local getting-started guide. `SYSTEM_SPEC.md` is the posting lifecycle and the tenant boundary around AI. `docs/bruno/` is one Bruno request per OpenAPI operation; a new endpoint updates `docs/api/openapi.yaml` and the collection together. Shot 6 is intentionally absent.

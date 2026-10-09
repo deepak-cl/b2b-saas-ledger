@@ -1,0 +1,34 @@
+meta {
+  name: Platform admin token
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{keycloak}}/realms/ledger/protocol/openid-connect/token
+  body: formUrlEncoded
+  auth: none
+}
+
+headers {
+  Content-Type: application/x-www-form-urlencoded
+}
+
+body:form-urlencoded {
+  grant_type: password
+  client_id: ledger-web
+  username: platform-admin
+  password: platform-admin
+}
+
+script:post-response {
+  const body = res.getBody();
+  if (body && body.access_token) {
+    bru.setEnvVar("adminToken", body.access_token);
+  }
+}
+
+docs {
+  Realm role `PLATFORM_ADMIN`. Stores the token in `adminToken`.
+  Admin routes take this token and do not send `X-Tenant-ID`.
+}

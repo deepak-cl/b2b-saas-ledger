@@ -1,0 +1,20 @@
+meta {
+  name: List accounts
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{gateway}}/api/v1/ledger/accounts
+  body: none
+  auth: inherit
+}
+
+headers {
+  X-Tenant-ID: {{tenant}}
+}
+
+docs {
+  operationId: listAccounts.
+  Chart of accounts and current balances for {{tenant}}.
+}

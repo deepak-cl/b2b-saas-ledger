@@ -1,0 +1,20 @@
+meta {
+  name: Activate tenant
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{gateway}}/api/v1/admin/tenants/{{tenant}}/activate
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  operationId: activateTenant.
+  Returns the company to ACTIVE after Suspend tenant.
+}

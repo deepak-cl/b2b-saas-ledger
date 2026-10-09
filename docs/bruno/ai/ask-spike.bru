@@ -1,0 +1,32 @@
+meta {
+  name: Ask whether spending spiked
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{gateway}}/api/v1/ai/audit/query
+  body: json
+  auth: inherit
+}
+
+headers {
+  X-Tenant-ID: {{tenant}}
+  Accept: application/json
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "query": "Did cloud spending spike?",
+    "from": "2026-05",
+    "to": "2026-10",
+    "currency": "USD"
+  }
+}
+
+docs {
+  operationId: aiAuditQuery.
+  Words such as spike, anomaly, unusual, and jump select the spending-anomaly tool.
+  A question without those words does not.
+}

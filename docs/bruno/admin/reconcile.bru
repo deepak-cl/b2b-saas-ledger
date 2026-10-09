@@ -1,0 +1,25 @@
+meta {
+  name: Reconcile
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{gateway}}/api/v1/admin/ingestion/reconciliation
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+params:query {
+  tenant: {{tenant}}
+}
+
+docs {
+  operationId: reconcile.
+  Recomputes balances and the hash chain for one company. Omit tenant to run every active company.
+  A nightly job does the same at 02:15.
+}

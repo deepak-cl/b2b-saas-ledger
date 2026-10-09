@@ -1,0 +1,33 @@
+meta {
+  name: Start PaySim import
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{gateway}}/api/v1/admin/ingestion/paysim
+  body: multipart-form
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+body:multipart-form {
+  tenant: acme
+  file: @file(samples/paysim.csv)
+}
+
+script:post-response {
+  const body = res.getBody();
+  if (body && body.jobExecutionId != null) {
+    bru.setEnvVar("jobId", String(body.jobExecutionId));
+  }
+}
+
+docs {
+  operationId: startPaySimImport.
+  Returns 202 and a job id. The sample file is one PAYMENT row.
+  If Bruno cannot resolve the file, pick docs/bruno/samples/paysim.csv in the form.
+}

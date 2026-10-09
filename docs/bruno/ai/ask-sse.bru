@@ -1,0 +1,32 @@
+meta {
+  name: Ask (SSE)
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{gateway}}/api/v1/ai/audit/query
+  body: json
+  auth: inherit
+}
+
+headers {
+  X-Tenant-ID: {{tenant}}
+  Accept: text/event-stream
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "query": "Show cloud spending each month",
+    "from": "2026-05",
+    "to": "2026-10",
+    "currency": "USD"
+  }
+}
+
+docs {
+  operationId: aiAuditQuery, event-stream variant.
+  Events are token, finding, and done. A budget or rate-limit failure is 429 before the stream opens.
+  "each month" selects monthly activity.
+}

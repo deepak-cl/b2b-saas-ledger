@@ -1,0 +1,21 @@
+meta {
+  name: Suspend tenant
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{gateway}}/api/v1/admin/tenants/{{tenant}}/suspend
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  operationId: suspendTenant.
+  Later calls for this company return 423 TENANT_UNAVAILABLE.
+  This request uses {{tenant}}, which defaults to acme. Activate it again before demo postings.
+}

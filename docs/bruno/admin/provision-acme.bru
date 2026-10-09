@@ -1,0 +1,35 @@
+meta {
+  name: Provision Acme
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{gateway}}/api/v1/admin/tenants
+  body: json
+  auth: bearer
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+body:json {
+  {
+    "slug": "acme",
+    "displayName": "Acme",
+    "tier": "SHARED",
+    "baseCurrency": "USD",
+    "seedChartOfAccounts": true
+  }
+}
+
+docs {
+  operationId: provisionTenant.
+  Creates schema t_acme, runs tenant migrations, and seeds the default chart.
+  409 TENANT_EXISTS means Acme is already provisioned. A company left in PROVISIONING can be retried with the same body.
+}

@@ -1,0 +1,32 @@
+meta {
+  name: Create account
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{gateway}}/api/v1/ledger/accounts
+  body: json
+  auth: inherit
+}
+
+headers {
+  X-Tenant-ID: {{tenant}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "code": "6600",
+    "name": "Office Supplies",
+    "type": "EXPENSE",
+    "currency": "USD",
+    "category": "OVERHEAD"
+  }
+}
+
+docs {
+  operationId: createAccount.
+  Requires a role that can manage accounts (not AUDITOR or VIEWER).
+  Repeating the same code is 409 ACCOUNT_CODE_EXISTS.
+}

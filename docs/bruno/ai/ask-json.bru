@@ -1,0 +1,32 @@
+meta {
+  name: Ask (JSON)
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{gateway}}/api/v1/ai/audit/query
+  body: json
+  auth: inherit
+}
+
+headers {
+  X-Tenant-ID: {{tenant}}
+  Accept: application/json
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "query": "How much cash is left?",
+    "from": "2026-05",
+    "to": "2026-10",
+    "currency": "USD"
+  }
+}
+
+docs {
+  operationId: aiAuditQuery, JSON variant.
+  A cash question uses account balances. VIEWER receives 403 PERMISSION_DENIED.
+  The default ledger profile answers with the local stub and does not call a paid model.
+}

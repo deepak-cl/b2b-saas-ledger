@@ -1,0 +1,20 @@
+meta {
+  name: Get tenant
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{gateway}}/api/v1/admin/tenants/{{tenant}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  operationId: getTenant.
+  Unknown slug is 404 TENANT_NOT_FOUND.
+}
