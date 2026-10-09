@@ -1,6 +1,6 @@
 # Architecture: Multi-Tenant B2B SaaS Ledger & Financial Analytics Engine
 
-Status: Shot 4 (tenant-scoped AI audit). Schema: `infra/db/verify-schema.sh`. API contract: `docs/api/openapi.yaml`. E2E: `infra/scripts/e2e.sh`.
+Status: Shot 5 (ledger web). Schema: `infra/db/verify-schema.sh`. API contract: `docs/api/openapi.yaml`. E2E: `infra/scripts/e2e.sh`. Web: `frontend/`.
 
 | Concern | Choice |
 |---|---|
@@ -348,7 +348,13 @@ Spend controls: a per-tenant Resilience4j limiter, a calendar-month token budget
 
 No profile uses the stub (`spring.ai.model.chat=none`). `openai` (gpt-4o-mini, text-embedding-3-small), `anthropic` (Claude Haiku; embeddings stay local unless you point them at OpenAI or Ollama), and `ollama` switch the model. The embedding width stays 1536 unless `LEDGER_EMBEDDING_DIMENSIONS` and a new migration change it.
 
-## 11. Verifying locally
+## 11. Shot 5: ledger web
+
+`frontend/` is a Vite + React + TypeScript app on port 5173. The dev server proxies `/api` to the gateway and `/realms` to Keycloak, so the browser stays on one origin. Sign-in uses the public `ledger-web` client (password = username for the demo users). The workspace switcher lists every `/tenants/<slug>/<ROLE>` in the access token; `X-Tenant-ID` follows the selection. A viewer can read and cannot post or ask.
+
+The ledger grid virtualizes with `@tanstack/react-virtual`, so 10,000 lines mount only the rows in view. "Load 10,000-line sample" (and the unsigned preview) fills that grid locally; lines posted in the session come from `POST /api/v1/ledger/transaction`. The balance-sheet chart is Recharts over `GET /api/v1/analytics/balance-sheet`. ⌘K opens a cmdk bar that streams `POST /api/v1/ai/audit/query` as `token`, `finding`, and `done` events.
+
+## 12. Verifying locally
 
 ```bash
 docker compose -f infra/docker-compose.yml up -d --wait
@@ -356,6 +362,7 @@ RESET=1 infra/db/verify-schema.sh          # schema invariants
 ./gradlew test                             # Testcontainers + mock JWTs; no Keycloak, no LLM
 ./gradlew :ledger-service:bootRun          # :8081
 ./gradlew :gateway:bootRun                 # :8080
+cd frontend && npm test && npm run dev     # :5173
 infra/scripts/e2e.sh                       # real Keycloak tokens through the gateway
 ```
 

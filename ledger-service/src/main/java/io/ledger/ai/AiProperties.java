@@ -10,7 +10,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 public record AiProperties(
         @DefaultValue("200000") int monthlyTokenBudget,
         @DefaultValue("800") int maxOutputTokens,
-        @DefaultValue("20") int requestsPerMinute,
+        @DefaultValue("60") int requestsPerMinute,
         @DefaultValue("10m") Duration cacheTtl,
         @DefaultValue("3s") Duration statementTimeout,
         @DefaultValue("50") int sqlRowLimit,

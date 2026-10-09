@@ -38,8 +38,9 @@ gateway:
       refill-tokens: ${GATEWAY_API_RATE:100}
       refill-period: 1s
     ai:
-      capacity: ${GATEWAY_AI_BURST:10}
-      refill-tokens: ${GATEWAY_AI_RATE:10}
+      # A person trying questions in the app should not be stopped after a handful of clicks.
+      capacity: ${GATEWAY_AI_BURST:60}
+      refill-tokens: ${GATEWAY_AI_RATE:60}
       refill-period: 1m
     admin:
       capacity: 30

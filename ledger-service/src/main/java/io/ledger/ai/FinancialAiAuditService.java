@@ -83,7 +83,6 @@ public class FinancialAiAuditService {
 
     public AuditInsight answer(AuditQuery query) {
         TenantInfo tenant = TenantContext.require().tenant();
-        limit(tenant);
         YearMonth to = query.to() == null ? YearMonth.now() : YearMonth.parse(query.to());
         YearMonth from = query.from() == null ? to.minusMonths(5) : YearMonth.parse(query.from());
         if (from.isAfter(to)) {
@@ -99,11 +98,12 @@ public class FinancialAiAuditService {
                     "NOT_APPLICABLE", null, 0);
             return new AuditInsight(id, cached.answer(), cached.findings(), List.of(), cached.sources(), usage);
         }
+        limit(tenant);
         budget(tenant);
         long started = System.nanoTime();
         List<Source> sources = retrieve(query.query());
         LedgerTools tools = new LedgerTools(jdbc, transactionManager, properties, from, to, currency);
-        String evidence = evidence(query.query(), tools, from, to, currency);
+        String evidence = AuditAnswer.speak(query.query(), evidence(query.query(), tools, from, to, currency));
         String user = query.query().trim() + "\nWindow " + from + " to " + to + " currency " + currency
                 + (sources.isEmpty() ? "" : "\nPrior notes:\n" + sources.stream().map(Source::summary).reduce("", (a, b) -> a + "\n" + b))
                 + "\nTool result:\n" + evidence;
@@ -159,11 +159,27 @@ public class FinancialAiAuditService {
 
     /** Runs the one whitelist tool that matches the question, then lets the model narrate it. */
     private static String evidence(String query, LedgerTools tools, YearMonth from, YearMonth to, String currency) {
-        int marker = query.indexOf("readonly:");
+        String lowered = query.toLowerCase(java.util.Locale.ROOT);
+        int marker = lowered.indexOf("readonly:");
         if (marker >= 0) {
             return tools.runReadOnlyQuery(query.substring(marker + "readonly:".length()).trim());
         }
-        return tools.spendingAnomalies(from.toString(), to.toString(), currency);
+        if (mentions(lowered, "anomal", "spike", "unusual", "jump")) {
+            return tools.spendingAnomalies(from.toString(), to.toString(), currency);
+        }
+        if (mentions(lowered, "each month", "monthly", "by month", "trend")) {
+            return tools.monthlyActivity(from.toString(), to.toString(), currency);
+        }
+        return tools.accountBalances(currency);
+    }
+
+    private static boolean mentions(String query, String... words) {
+        for (String word : words) {
+            if (query.contains(word)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void limit(TenantInfo tenant) {

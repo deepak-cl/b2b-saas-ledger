@@ -69,6 +69,15 @@ kc_grant() { # user tenant ROLE
   uid=$(kc "$KEYCLOAK/admin/realms/ledger/users?username=$1&exact=true" | json "d[0]['id']")
   kc -o /dev/null -X PUT "$KEYCLOAK/admin/realms/ledger/users/$uid/groups/$gid"
 }
+# Demo users (alice, bob) keep the memberships from the realm import. Smoke tests use their own user.
+kc_ensure_user() { # username
+  local uid
+  uid=$(kc "$KEYCLOAK/admin/realms/ledger/users?username=$1&exact=true" | json "d[0]['id']" 2>/dev/null || true)
+  if [ -z "$uid" ] || [ "$uid" = "None" ]; then
+    kc -o /dev/null -X POST -d "{\"username\":\"$1\",\"enabled\":true,\"emailVerified\":true,\"firstName\":\"E2E\",\"lastName\":\"User\",\"credentials\":[{\"type\":\"password\",\"value\":\"$1\",\"temporary\":false}]}" \
+      "$KEYCLOAK/admin/realms/ledger/users"
+  fi
+}
 
 post_tx() { # label status code token tenant key body
   expect "$1" "$2" "$3" -- -X POST "$GATEWAY/api/v1/ledger/transaction" \
@@ -119,31 +128,32 @@ expect "invalid provisioning request is 400" 400 VALIDATION_FAILED -- -X POST "$
 # ------------------------------------------------------------------ 2. memberships
 step "2. Keycloak memberships"
 KC_TOKEN=$(kc_admin_token)
-kc_grant alice "$SHARED" ACCOUNTANT && ok "alice -> /tenants/$SHARED/ACCOUNTANT"
+kc_ensure_user e2e
+kc_grant e2e "$SHARED" ACCOUNTANT && ok "e2e -> /tenants/$SHARED/ACCOUNTANT"
 kc_grant bob "$ISOLATED" OWNER && ok "bob -> /tenants/$ISOLATED/OWNER"
 kc_grant bob "$SHARED" VIEWER && ok "bob -> /tenants/$SHARED/VIEWER"
-ALICE=$(token alice)
+E2E=$(token e2e)
 BOB=$(token bob)
-claims=$(printf '%s' "$ALICE" | cut -d. -f2 | python3 -c "import sys,base64,json; s=sys.stdin.read().strip(); s+='='*(-len(s)%4); print(json.loads(base64.urlsafe_b64decode(s))['tenants'])")
-[[ $claims == *"/tenants/$SHARED/ACCOUNTANT"* ]] && ok "alice's token carries the new tenant claim" || bad "tenant claim missing" "$claims"
+claims=$(printf '%s' "$E2E" | cut -d. -f2 | python3 -c "import sys,base64,json; s=sys.stdin.read().strip(); s+='='*(-len(s)%4); print(json.loads(base64.urlsafe_b64decode(s))['tenants'])")
+[[ $claims == *"/tenants/$SHARED/ACCOUNTANT"* ]] && ok "e2e's token carries the new tenant claim" || bad "tenant claim missing" "$claims"
 
 # ------------------------------------------------------------------ 3. postings
 step "3. Postings through the gateway"
-post_tx "seed capital (201)" 201 "" "$ALICE" "$SHARED" "e2e-$RUN-seed" "$(tx 'Seed capital' "$(ln 1000 DEBIT 50000 USD)" "$(ln 3000 CREDIT 50000 USD)")"
+post_tx "seed capital (201)" 201 "" "$E2E" "$SHARED" "e2e-$RUN-seed" "$(tx 'Seed capital' "$(ln 1000 DEBIT 50000 USD)" "$(ln 3000 CREDIT 50000 USD)")"
 TX_ID=$(printf '%s' "$BODY" | json "d.get('id')" 2>/dev/null || true)
 grep -qi '^location:' <<<"$HEADERS" && ok "Location header present" || bad "Location header missing"
 grep -qi '^x-request-id:' <<<"$HEADERS" && ok "X-Request-Id header present" || bad "X-Request-Id missing"
 [ "$(grep -ci '^x-request-id:' <<<"$HEADERS")" = 1 ] && ok "X-Request-Id not duplicated" || bad "X-Request-Id duplicated"
 
 BODY_AWS=$(tx 'AWS invoice' "$(ln 6100 DEBIT 1250.00 USD)" "$(ln 1000 CREDIT 1250 USD)")
-post_tx "cloud invoice (201)" 201 "" "$ALICE" "$SHARED" "e2e-$RUN-aws" "$BODY_AWS"
-post_tx "replay same key + body (200)" 200 "" "$ALICE" "$SHARED" "e2e-$RUN-aws" "$BODY_AWS"
+post_tx "cloud invoice (201)" 201 "" "$E2E" "$SHARED" "e2e-$RUN-aws" "$BODY_AWS"
+post_tx "replay same key + body (200)" 200 "" "$E2E" "$SHARED" "e2e-$RUN-aws" "$BODY_AWS"
 grep -qi '^idempotent-replayed: true' <<<"$HEADERS" && ok "Idempotent-Replayed: true" || bad "replay header missing"
-post_tx "same key, different body (409)" 409 IDEMPOTENCY_KEY_REUSED "$ALICE" "$SHARED" "e2e-$RUN-aws" "$(tx 'Other' "$(ln 6100 DEBIT 1 USD)" "$(ln 1000 CREDIT 1 USD)")"
-post_tx "unbalanced (422)" 422 LEDGER_UNBALANCED "$ALICE" "$SHARED" "e2e-$RUN-unbal" "$(tx 'Bad' "$(ln 6100 DEBIT 10 USD)" "$(ln 1000 CREDIT 9.99 USD)")"
-post_tx "overdraft cash (422)" 422 INSUFFICIENT_FUNDS "$ALICE" "$SHARED" "e2e-$RUN-over" "$(tx 'Huge' "$(ln 6200 DEBIT 9999999 USD)" "$(ln 1000 CREDIT 9999999 USD)")"
+post_tx "same key, different body (409)" 409 IDEMPOTENCY_KEY_REUSED "$E2E" "$SHARED" "e2e-$RUN-aws" "$(tx 'Other' "$(ln 6100 DEBIT 1 USD)" "$(ln 1000 CREDIT 1 USD)")"
+post_tx "unbalanced (422)" 422 LEDGER_UNBALANCED "$E2E" "$SHARED" "e2e-$RUN-unbal" "$(tx 'Bad' "$(ln 6100 DEBIT 10 USD)" "$(ln 1000 CREDIT 9.99 USD)")"
+post_tx "overdraft cash (422)" 422 INSUFFICIENT_FUNDS "$E2E" "$SHARED" "e2e-$RUN-over" "$(tx 'Huge' "$(ln 6200 DEBIT 9999999 USD)" "$(ln 1000 CREDIT 9999999 USD)")"
 expect "missing Idempotency-Key (400)" 400 IDEMPOTENCY_KEY_MISSING -- -X POST "$GATEWAY/api/v1/ledger/transaction" \
-  -H "Authorization: Bearer $ALICE" -H "X-Tenant-ID: $SHARED" -H 'Content-Type: application/json' -d "$BODY_AWS"
+  -H "Authorization: Bearer $E2E" -H "X-Tenant-ID: $SHARED" -H 'Content-Type: application/json' -d "$BODY_AWS"
 post_tx "viewer cannot post (403)" 403 PERMISSION_DENIED "$BOB" "$SHARED" "e2e-$RUN-viewer" "$BODY_AWS"
 post_tx "ISOLATED tenant posting (201)" 201 "" "$BOB" "$ISOLATED" "e2e-$RUN-iso" "$(tx 'EUR seed' "$(ln 1000 DEBIT 8000 EUR)" "$(ln 3000 CREDIT 8000 EUR)")"
 post_tx "ISOLATED tenant invoice (201)" 201 "" "$BOB" "$ISOLATED" "e2e-$RUN-iso-inv" "$(tx 'Invoice' "$(ln 1100 DEBIT 1500 EUR)" "$(ln 4000 CREDIT 1500 EUR)")"
@@ -168,7 +178,7 @@ broken=$(docker exec "$PG_CONTAINER" psql -At -U ledger -d ledger -c "SELECT cou
 # ------------------------------------------------------------------ 5. analytics
 step "5. Balance sheet"
 expect "$SHARED balance sheet (200)" 200 "" -- "$GATEWAY/api/v1/analytics/balance-sheet?periods=3" \
-  -H "Authorization: Bearer $ALICE" -H "X-Tenant-ID: $SHARED"
+  -H "Authorization: Bearer $E2E" -H "X-Tenant-ID: $SHARED"
 [ "$(printf '%s' "$BODY" | json "all(d['balanced'])")" = True ] && ok "$SHARED balances in every period" || bad "$SHARED unbalanced" "$BODY"
 expect "$ISOLATED balance sheet (200)" 200 "" -- "$GATEWAY/api/v1/analytics/balance-sheet?periods=2" \
   -H "Authorization: Bearer $BOB" -H "X-Tenant-ID: $ISOLATED"
@@ -178,16 +188,16 @@ summary=$(printf '%s' "$BODY" | json "(d['currency'], d['assets']['totals'][-1],
 # ------------------------------------------------------------------ 6. rate limiting
 step "6. Per-tenant AI rate limit at the gateway"
 codes=""
-for i in $(seq 1 15); do
+for i in $(seq 1 65); do
   codes+="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$GATEWAY/api/v1/ai/audit/query" \
-    -H "Authorization: Bearer $ALICE" -H "X-Tenant-ID: $SHARED" -H 'Content-Type: application/json' -d '{"query":"ping"}') "
+    -H "Authorization: Bearer $E2E" -H "X-Tenant-ID: $SHARED" -H 'Content-Type: application/json' -d '{"query":"ping"}') "
 done
-[[ $codes == *429* ]] && ok "AI bucket exhausted -> 429 (statuses: $codes)" || bad "no 429 within 15 AI calls" "$codes"
+[[ $codes == *429* ]] && ok "AI bucket exhausted -> 429 (statuses: $codes)" || bad "no 429 within 65 AI calls" "$codes"
 expect "429 is problem+json with Retry-After" 429 RATE_LIMITED -- -X POST "$GATEWAY/api/v1/ai/audit/query" \
-  -H "Authorization: Bearer $ALICE" -H "X-Tenant-ID: $SHARED" -H 'Content-Type: application/json' -d '{"query":"ping"}'
+  -H "Authorization: Bearer $E2E" -H "X-Tenant-ID: $SHARED" -H 'Content-Type: application/json' -d '{"query":"ping"}'
 grep -qi '^retry-after:' <<<"$HEADERS" && ok "Retry-After present" || bad "Retry-After missing"
 expect "ledger calls of the same tenant still pass" 200 "" -- "$GATEWAY/api/v1/ledger/accounts" \
-  -H "Authorization: Bearer $ALICE" -H "X-Tenant-ID: $SHARED"
+  -H "Authorization: Bearer $E2E" -H "X-Tenant-ID: $SHARED"
 
 # ------------------------------------------------------------------ summary
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$pass" "$fail"

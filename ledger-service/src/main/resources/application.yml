@@ -84,7 +84,7 @@ ledger:
   ai:
     monthly-token-budget: ${LEDGER_AI_MONTHLY_TOKENS:200000}
     max-output-tokens: 800
-    requests-per-minute: 20
+    requests-per-minute: 60
     cache-ttl: 10m
     statement-timeout: 3s
     sql-row-limit: 50

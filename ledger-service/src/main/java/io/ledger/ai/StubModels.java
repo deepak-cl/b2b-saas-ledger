@@ -49,7 +49,7 @@ final class StubModels {
             String evidence = marker < 0 ? "" : contents.substring(marker + "Tool result:".length()).trim();
             String answer = evidence.isBlank()
                     ? "No ledger tool returned data for this question."
-                    : "Based on this tenant's ledger:\n" + evidence;
+                    : evidence;
             return response(new AssistantMessage(answer), PROMPT_TOKENS, COMPLETION_TOKENS);
         }
 

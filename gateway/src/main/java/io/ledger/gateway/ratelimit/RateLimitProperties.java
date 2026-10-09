@@ -19,7 +19,7 @@ public record RateLimitProperties(
 
     public RateLimitProperties {
         api = api != null ? api : new Limit(200, 100, Duration.ofSeconds(1));
-        ai = ai != null ? ai : new Limit(10, 10, Duration.ofMinutes(1));
+        ai = ai != null ? ai : new Limit(60, 60, Duration.ofMinutes(1));
         admin = admin != null ? admin : new Limit(30, 30, Duration.ofMinutes(1));
         idleEviction = idleEviction != null ? idleEviction : Duration.ofMinutes(15);
         maxTrackedKeys = maxTrackedKeys > 0 ? maxTrackedKeys : 100_000;
