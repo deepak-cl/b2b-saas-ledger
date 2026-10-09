@@ -23,6 +23,21 @@ spring:
       shared_db_username: ${spring.datasource.username}
       shared_db_secret_ref: env:LEDGER_DB_PASSWORD
       embedding_dimensions: 1536
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: never
+  ai:
+    model:
+      chat: none
+      embedding: none
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiImageAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration
 
 ledger:
   tenancy:
@@ -32,6 +47,23 @@ ledger:
     posting-queue-timeout: 2s
   secrets:
     LEDGER_DB_PASSWORD: ledger
+  ingestion:
+    sec:
+      user-agent: "Ledger Test ledger-test@example.com"
+      base-url: http://127.0.0.1:9
+      rate-limit-per-second: 10
+      max-years: 5
+    paysim:
+      import-directory: ${java.io.tmpdir}/ledger-paysim-test
+      chunk-size: 5
+      partitions: 2
+      epoch: 2026-01-01
+    reconciliation:
+      enabled: false
+  ai:
+    monthly-token-budget: 200
+    requests-per-minute: 1000
+    provider: stub
 
 springdoc:
   api-docs:

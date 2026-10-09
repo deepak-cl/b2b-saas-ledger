@@ -30,8 +30,8 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Boots the full ledger-service against one real PostgreSQL 17 + pgvector container shared by
  * all integration tests (started once per JVM; the Spring context is cached across classes).
- * JWTs are mocked with spring-security-test, so no Keycloak and no network are needed, and no
- * AI provider is ever called.
+ * JWTs are mocked with spring-security-test, so no Keycloak and no network are needed.
+ * The audit endpoint uses the in-process stub model; no paid provider is called.
  */
 @SpringBootTest
 @AutoConfigureMockMvc

@@ -72,6 +72,11 @@ public class LedgerPostingService {
     }
 
     public PostingResult post(String idempotencyKey, PostTransactionRequest request, UUID createdBy) {
+        return post(idempotencyKey, request, createdBy, JournalSource.API);
+    }
+
+    /** Same as {@link #post(String, PostTransactionRequest, UUID)} with an explicit journal source. */
+    public PostingResult post(String idempotencyKey, PostTransactionRequest request, UUID createdBy, JournalSource source) {
         TenantScope scope = TenantContext.require();
         byte[] fingerprint = RequestFingerprint.of(request, jsonMapper);
 
@@ -83,7 +88,7 @@ public class LedgerPostingService {
         UUID journalId;
         try {
             journalId = bulkheads.execute(scope.tenant().slug(),
-                    () -> postingTx.execute(status -> insert(idempotencyKey, request, fingerprint, createdBy, scope)));
+                    () -> postingTx.execute(status -> insert(idempotencyKey, request, fingerprint, createdBy, source, scope)));
         } catch (DuplicateKeyException e) {
             if (!String.valueOf(e.getMessage()).contains(IDEMPOTENCY_CONSTRAINT)) {
                 throw e;
@@ -116,7 +121,7 @@ public class LedgerPostingService {
     }
 
     private UUID insert(String idempotencyKey, PostTransactionRequest request, byte[] fingerprint, UUID createdBy,
-                        TenantScope scope) {
+                        JournalSource source, TenantScope scope) {
         // Fail fast instead of queueing behind a long-running lock holder.
         jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'");
 
@@ -131,12 +136,13 @@ public class LedgerPostingService {
         UUID journalId = jdbc.sql("""
                         INSERT INTO journal_entries (idempotency_key, effective_date, description, source, external_ref,
                                                      created_by, metadata, request_hash)
-                        VALUES (:key, :date, :description, 'API', :externalRef, :createdBy, CAST(:metadata AS jsonb), :hash)
+                        VALUES (:key, :date, :description, :source, :externalRef, :createdBy, CAST(:metadata AS jsonb), :hash)
                         RETURNING id
                         """)
                 .param("key", idempotencyKey)
                 .param("date", request.effectiveDate())
                 .param("description", request.description())
+                .param("source", source.name())
                 .param("externalRef", request.externalRef())
                 .param("createdBy", createdBy)
                 .param("metadata", jsonMapper.writeValueAsString(request.metadata() == null ? Map.of() : request.metadata()))
@@ -151,7 +157,7 @@ public class LedgerPostingService {
                         VALUES ('JournalEntry', :id, 'ledger.transaction.posted.v1', CAST(:payload AS jsonb))
                         """)
                 .param("id", journalId.toString())
-                .param("payload", jsonMapper.writeValueAsString(eventPayload(journalId, request, scope)))
+                .param("payload", jsonMapper.writeValueAsString(eventPayload(journalId, request, source, scope)))
                 .update();
         return journalId;
     }
@@ -227,7 +233,8 @@ public class LedgerPostingService {
         });
     }
 
-    private static Map<String, Object> eventPayload(UUID journalId, PostTransactionRequest request, TenantScope scope) {
+    private static Map<String, Object> eventPayload(UUID journalId, PostTransactionRequest request, JournalSource source,
+                                                     TenantScope scope) {
         Map<String, BigDecimal> debits = new LinkedHashMap<>();
         for (Line line : request.lines()) {
             if (line.direction() == io.ledger.ledger.Direction.DEBIT) {
@@ -239,6 +246,7 @@ public class LedgerPostingService {
         payload.put("tenant", scope.tenant().slug());
         payload.put("effectiveDate", request.effectiveDate().toString());
         payload.put("description", request.description());
+        payload.put("source", source.name());
         payload.put("lineCount", request.lines().size());
         payload.put("totalsByCurrency", debits);
         payload.put("postedBy", scope.principal());

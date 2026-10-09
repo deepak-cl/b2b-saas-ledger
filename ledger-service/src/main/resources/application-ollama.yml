@@ -1,0 +1,19 @@
+# Local profile. The embedding model must emit ledger.tenancy.embedding-dimensions (default 1536).
+spring:
+  ai:
+    model:
+      chat: ollama
+      embedding: ollama
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        options:
+          model: ${OLLAMA_CHAT_MODEL:llama3.2}
+          temperature: 0.2
+      embedding:
+        options:
+          model: ${OLLAMA_EMBED_MODEL:qwen3-embedding}
+
+ledger:
+  ai:
+    provider: ollama

@@ -37,6 +37,26 @@ spring:
           issuer-uri: ${LEDGER_OIDC_ISSUER:http://localhost:8180/realms/ledger}
           jwk-set-uri: ${LEDGER_OIDC_JWKS:http://localhost:8180/realms/ledger/protocol/openid-connect/certs}
           audiences: ledger-api
+  batch:
+    job:
+      enabled: false # jobs are launched by the ingestion API, not at startup
+    jdbc:
+      initialize-schema: never # control-plane Flyway V2 owns BATCH_* tables
+  servlet:
+    multipart:
+      max-file-size: 2GB
+      max-request-size: 2GB
+  ai:
+    # none keeps the stub model. Profiles openai / anthropic / ollama switch these.
+    model:
+      chat: ${LEDGER_AI_CHAT:none}
+      embedding: ${LEDGER_AI_EMBEDDING:none}
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiImageAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration
 
 ledger:
   tenancy:
@@ -47,6 +67,28 @@ ledger:
   # Local-development fallbacks for env: secret references (never used when the env var is set).
   secrets:
     LEDGER_DB_PASSWORD: ledger
+  ingestion:
+    sec:
+      base-url: ${SEC_EDGAR_BASE_URL:https://data.sec.gov}
+      # Required before any SEC call. Example: Ledger Local dev@example.com
+      user-agent: ${SEC_USER_AGENT:}
+      rate-limit-per-second: 10
+      max-years: 5
+    paysim:
+      import-directory: ${LEDGER_IMPORT_DIR:var/imports}
+      chunk-size: 200
+      partitions: 4
+    reconciliation:
+      enabled: true
+      cron: "0 15 2 * * *"
+  ai:
+    monthly-token-budget: ${LEDGER_AI_MONTHLY_TOKENS:200000}
+    max-output-tokens: 800
+    requests-per-minute: 20
+    cache-ttl: 10m
+    statement-timeout: 3s
+    sql-row-limit: 50
+    provider: ${LEDGER_AI_PROVIDER:stub}
 
 springdoc:
   api-docs:

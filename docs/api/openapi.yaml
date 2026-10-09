@@ -470,6 +470,120 @@ paths:
               schema: { $ref: '#/components/schemas/Tenant' }
         '404': { $ref: '#/components/responses/TenantNotFound' }
 
+  /api/v1/admin/ingestion/sec:
+    post:
+      tags: [Admin]
+      operationId: ingestSecCompanyFacts
+      summary: Import 10-K balance sheets from SEC EDGAR
+      description: |
+        Fetches `https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json` for the CIK
+        (10-digit, zero-padded) and posts the last `years` fiscal-year balance sheets into the
+        tenant. The oldest year is an opening snapshot; later years are the change since the
+        previous year. Re-running the same window replays (`posted: 0`). The SEC User-Agent and
+        the 10 requests/second cap are configured on the service, not on this request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant, cik]
+              properties:
+                tenant: { type: string, example: acme }
+                cik: { type: string, example: "320193" }
+                years: { type: integer, minimum: 1, maximum: 30, default: 5 }
+      responses:
+        '200':
+          description: Import finished
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant: { type: string }
+                  cik: { type: string, example: "0000320193" }
+                  entityName: { type: string }
+                  posted: { type: integer }
+                  replayed: { type: integer }
+                  skipped: { type: integer }
+                  periods:
+                    type: array
+                    items: { type: string, format: date }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404':
+          description: Unknown tenant (`TENANT_NOT_FOUND`) or unknown CIK (`RESOURCE_NOT_FOUND`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/admin/ingestion/paysim:
+    post:
+      tags: [Admin]
+      operationId: startPaySimImport
+      summary: Start a partitioned PaySim CSV load
+      description: |
+        Accepts a PaySim CSV (`step,type,amount,nameOrig,...`). The file is streamed in line-range
+        partitions; the response is `202` as soon as the job exists. Poll `GET /api/v1/admin/ingestion/jobs/{id}`.
+        Loading the same file again replays each line.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [tenant, file]
+              properties:
+                tenant: { type: string, example: acme }
+                file: { type: string, format: binary }
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaySimJob' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/admin/ingestion/jobs/{id}:
+    get:
+      tags: [Admin]
+      operationId: getPaySimJob
+      summary: Status of a PaySim job
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: The execution
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaySimJob' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/admin/ingestion/reconciliation:
+    post:
+      tags: [Admin]
+      operationId: reconcile
+      summary: Reconcile one tenant, or every active tenant
+      description: |
+        Under REPEATABLE READ, read only: recomputes balances and period rollups from ledger lines
+        and runs the hash-chain check. A nightly run does the same for every active tenant.
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          schema: { type: string, example: acme }
+      responses:
+        '200':
+          description: One report per tenant
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ReconciliationReport' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -836,6 +950,28 @@ components:
             username: { type: string, maxLength: 63 }
             secretRef: { type: string, pattern: '^(env|file):.+', description: Where the password is read from; never the password itself }
             poolMaxSize: { type: integer, minimum: 1, maximum: 200, default: 10 }
+
+    PaySimJob:
+      type: object
+      required: [jobExecutionId, status, posted, replayed, skipped]
+      properties:
+        jobExecutionId: { type: integer, format: int64 }
+        status: { type: string, example: COMPLETED, description: Spring Batch execution status }
+        posted: { type: integer, format: int64 }
+        replayed: { type: integer, format: int64 }
+        skipped: { type: integer, format: int64 }
+        detail: { type: string, nullable: true }
+    ReconciliationReport:
+      type: object
+      required: [id, tenant, status, balanceMismatches, chainBreaks, periodMismatches]
+      properties:
+        id: { type: string, format: uuid }
+        tenant: { type: string }
+        status: { type: string, enum: [OK, MISMATCH, FAILED] }
+        balanceMismatches: { type: integer }
+        chainBreaks: { type: integer }
+        periodMismatches: { type: integer }
+        detail: { type: string, nullable: true }
 
     Problem:
       type: object

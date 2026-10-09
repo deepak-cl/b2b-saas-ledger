@@ -1,0 +1,18 @@
+# Paid chat profile. Activate with --spring.profiles.active=anthropic and ANTHROPIC_API_KEY.
+# Embeddings stay on the stub unless you also set LEDGER_AI_EMBEDDING=openai (and OPENAI_API_KEY)
+# or run the ollama profile for local embeddings. The vector column is 1536 dimensions.
+spring:
+  ai:
+    model:
+      chat: anthropic
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:}
+      chat:
+        options:
+          model: claude-haiku-4-5
+          temperature: 0.2
+          max-tokens: 800
+
+ledger:
+  ai:
+    provider: anthropic

@@ -9,3 +9,4 @@ build/
 .env
 node_modules/
 dist/
+var/

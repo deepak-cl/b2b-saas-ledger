@@ -1,6 +1,6 @@
 # Architecture: Multi-Tenant B2B SaaS Ledger & Financial Analytics Engine
 
-Status: Shot 2 (routing, security, ledger API). Schema: `infra/db/verify-schema.sh`. API contract: `docs/api/openapi.yaml`. E2E: `infra/scripts/e2e.sh`.
+Status: Shot 4 (tenant-scoped AI audit). Schema: `infra/db/verify-schema.sh`. API contract: `docs/api/openapi.yaml`. E2E: `infra/scripts/e2e.sh`.
 
 | Concern | Choice |
 |---|---|
@@ -322,9 +322,33 @@ Errors are RFC 9457 `application/problem+json` with a stable `code` (`docs/api/o
 
 Posting is idempotent per `Idempotency-Key` (fingerprint of the canonical body): same key + same body replays (`200`, `Idempotent-Replayed: true`); same key + different body is `409 IDEMPOTENCY_KEY_REUSED`. Concurrent postings of one tenant are capped by a Resilience4j bulkhead (`TENANT_BUSY`) so one noisy tenant cannot exhaust the shared pool.
 
-The AI route is wired (role `AI_QUERY`, gateway AI bucket) but returns a Shot-4 placeholder; no LLM is called.
+The AI route (role `AI_QUERY`, gateway AI bucket) is implemented in section 10. Tests and the default profile use a stub model; no paid API is called.
 
-## 9. Verifying locally
+## 9. Shot 3: ingestion
+
+External data enters through the same posting path as the API, with `journal_entries.source` set to `SEC_EDGAR` or `PAYSIM`. Re-running an import replays; it does not double-post.
+
+**SEC EDGAR.** `POST /api/v1/admin/ingestion/sec` fetches `https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json` (the URL in `PROJECT.md` is not a real endpoint). The client sends a contact `User-Agent` (`ledger.ingestion.sec.user-agent`, for example `Ledger Local dev@example.com`) and shares one Resilience4j bucket of at most 10 requests per second. Only USD `10-K` / `FY` facts are kept; a restated period keeps the latest `filed` date. The oldest year in the requested window is an opening snapshot (assets, liabilities, equity). Each later year is the change since the previous imported year, with an equity plug line when the filing does not satisfy the accounting equation. `ledger_ensure_partitions` opens any historical month before the first post. Pick the year window once: widening it later changes the old opening journal and comes back as `409 IDEMPOTENCY_KEY_REUSED`.
+
+**PaySim.** `POST /api/v1/admin/ingestion/paysim` accepts a CSV in the Kaggle layout and returns `202` plus a job id (`GET /api/v1/admin/ingestion/jobs/{id}`). A Spring Batch 6 job splits the file into line ranges and streams each range; the file is never loaded whole. Workers post on a bounded pool, separate from the launcher thread so the two cannot deadlock. Each row is one journal in the tenant's base currency (settlement cash against a type account). The idempotency key is a hash of the file plus the line number. Customer names stay in metadata. `step` is an hour offset from `ledger.ingestion.paysim.epoch` (default: the first of the current month).
+
+**Reconciliation.** Nightly at 02:15, and on `POST /api/v1/admin/ingestion/reconciliation`, each active tenant is read under `REPEATABLE READ` / read only. Balances and monthly rollups are recomputed from `ledger_entries` and compared, and `ledger_verify_chain()` is run. The result is stored in `public.reconciliation_runs` (`OK`, `MISMATCH`, or `FAILED`). One tenant's failure does not stop the others.
+
+## 10. Shot 4: tenant-scoped AI audit
+
+`POST /api/v1/ai/audit/query` answers a question about the caller's tenant. `Accept: application/json` returns the full insight. `Accept: text/event-stream` sends `token`, `finding`, and `done` events. A budget or rate-limit failure is `429` before the stream opens.
+
+The model does not write SQL and does not see other tenants:
+
+- Retrieval uses `ai.vector_store` with `Filter.Expression tenant_id == <current tenant>`. Only a short summary of the question and answer is embedded, and the same text is not embedded twice (content hash). New connections of the database role use `hnsw.iterative_scan = relaxed_order` when that pgvector setting is available.
+- The service runs one whitelist tool for the question: spending anomalies from `account_period_balances`, or, when the question contains `readonly:`, a single SELECT. Those tools are also registered on `ChatClient`, so a real model can call `accountBalances`, `monthlyActivity`, `spendingAnomalies`, `comparePeriods`, and `runReadOnlyQuery`.
+- `runReadOnlyQuery` is parsed with JSqlParser (one SELECT, ledger tables only, no system functions, no other schema) and then executed as the `ledger_ai_reader` role, which has `SELECT` only, inside a read-only transaction with `statement_timeout`.
+
+Spend controls: a per-tenant Resilience4j limiter, a calendar-month token budget (`429 AI_BUDGET_EXCEEDED`), a bulkhead and circuit breaker around the model (`503 AI_PROVIDER_UNAVAILABLE`), a short cache for the same question and ledger version, and a cap on output tokens. Every call is appended to `ai_audit_logs`.
+
+No profile uses the stub (`spring.ai.model.chat=none`). `openai` (gpt-4o-mini, text-embedding-3-small), `anthropic` (Claude Haiku; embeddings stay local unless you point them at OpenAI or Ollama), and `ollama` switch the model. The embedding width stays 1536 unless `LEDGER_EMBEDDING_DIMENSIONS` and a new migration change it.
+
+## 11. Verifying locally
 
 ```bash
 docker compose -f infra/docker-compose.yml up -d --wait

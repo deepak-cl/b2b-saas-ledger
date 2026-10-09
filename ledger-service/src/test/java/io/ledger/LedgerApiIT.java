@@ -187,7 +187,8 @@ class LedgerApiIT extends IntegrationTestSupport {
             mvc.perform(post("/api/v1/ai/audit/query").header("X-Tenant-ID", "acme")
                             .contentType(MediaType.APPLICATION_JSON).content("{\"query\":\"anomalies\"}").with(ALICE))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.implemented").value(false));
+                    .andExpect(jsonPath("$.queryId").isNotEmpty())
+                    .andExpect(jsonPath("$.usage.cached").value(false));
         }
 
         @Test

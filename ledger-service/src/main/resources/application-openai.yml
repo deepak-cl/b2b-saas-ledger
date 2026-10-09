@@ -1,0 +1,21 @@
+# Paid profile. Activate with --spring.profiles.active=openai and OPENAI_API_KEY.
+# Defaults stay on the small tiers. Raise max-tokens or the model name only for a demo.
+spring:
+  ai:
+    model:
+      chat: openai
+      embedding: openai
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+      chat:
+        options:
+          model: gpt-4o-mini
+          temperature: 0.2
+          max-tokens: 800
+      embedding:
+        options:
+          model: text-embedding-3-small
+
+ledger:
+  ai:
+    provider: openai
